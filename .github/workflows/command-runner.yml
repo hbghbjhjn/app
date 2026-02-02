@@ -11,7 +11,6 @@ permissions:
 
 jobs:
   run:
-    # נשאיר את זה על אישיו #1 בלבד כמו שהיה
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.issue.pull_request == null && github.event.issue.number == 1) }}
     runs-on: ubuntu-latest
 
@@ -43,21 +42,19 @@ jobs:
       - name: Guard (actor + token + allowlist)
         id: guard
         env:
-          BODY: ${{ github.event_name == 'issue_comment' && github.event.comment.body || '' }}
-          TOKEN: ${{ secrets.CMD_TOKEN }}
-          ACTOR: ${{ github.actor }}
-          ALLOWED_ACTOR: hbghbjhjn
+          BODY: "${{ github.event.comment.body }}"
+          TOKEN: "${{ secrets.CMD_TOKEN }}"
+          ACTOR: "${{ github.actor }}"
+          ALLOWED_ACTOR: "hbghbjhjn"
         run: |
           set -euo pipefail
 
-          # ברירת מחדל
           echo "ok=false" >> "$GITHUB_OUTPUT"
           echo "cmd=" >> "$GITHUB_OUTPUT"
           echo "error=" >> "$GITHUB_OUTPUT"
 
-          # ב-workflow_dispatch אין BODY (אין תגובה) – נשתמש ב-input ריק ונעצור עם הודעה
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "error=workflow_dispatch triggered. This workflow is meant to be triggered from Issue #1 comments." >> "$GITHUB_OUTPUT"
+            echo "error=workflow_dispatch triggered. Use Issue #1 comments for commands." >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -115,7 +112,7 @@ jobs:
           sha256sum -c "${ZIP}.sha256"
 
           unzip -q "$ZIP" -d "$HOME/.gradle-dist"
-          echo "$HOME/.gradle-dist/gradle-${GRADLE_VERSION}/bin" >> $GITHUB_PATH
+          echo "$HOME/.gradle-dist/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
           gradle --version
 
       - name: Run command
@@ -123,8 +120,8 @@ jobs:
         if: ${{ steps.guard.outputs.ok == 'true' }}
         continue-on-error: true
         env:
-          CMD: ${{ steps.guard.outputs.cmd }}
-          BODY: ${{ github.event.comment.body }}
+          CMD: "${{ steps.guard.outputs.cmd }}"
+          BODY: "${{ github.event.comment.body }}"
         run: |
           set -euo pipefail
           chmod +x commands/*.sh
@@ -165,7 +162,7 @@ jobs:
             const ok = "${{ steps.guard.outputs.ok }}";
             const cmd = "${{ steps.guard.outputs.cmd }}";
             const guardErr = `${{ steps.guard.outputs.error }}`.trim();
-            const runOutcome = "${{ steps.run_cmd.outcome }}"; // success/failure/skipped
+            const runOutcome = "${{ steps.run_cmd.outcome }}";
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             let lines = [];
@@ -186,7 +183,7 @@ jobs:
               lines.push(`- Command step outcome: \`${runOutcome}\``);
               if (cmd === "build_apk" && runOutcome === "success") {
                 lines.push("");
-                lines.push("✅ אם הכל עבר – ה-APK נמצא תחת **Actions → Artifacts → app-debug-apk**");
+                lines.push("✅ APK: **Actions → Artifacts → app-debug-apk**");
               }
             }
 
