@@ -43,7 +43,7 @@ jobs:
           fi
 
           case "$CMD" in
-            init_android|build_apk)
+            init_android|build_apk|apply_patch)
               echo "cmd=$CMD" >> $GITHUB_OUTPUT
               ;;
             *)
@@ -55,9 +55,43 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up JDK 17
+        if: ${{ steps.guard.outputs.cmd == 'build_apk' }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Gradle (verified)
+        if: ${{ steps.guard.outputs.cmd == 'build_apk' }}
+        env:
+          GRADLE_VERSION: "8.2"
+        run: |
+          set -euo pipefail
+
+          ZIP="gradle-${GRADLE_VERSION}-bin.zip"
+          URL="https://services.gradle.org/distributions/${ZIP}"
+          SHA_URL="${URL}.sha256"
+
+          echo "Downloading Gradle: $URL"
+          curl -fsSL "$URL" -o "$ZIP"
+
+          echo "Downloading checksum: $SHA_URL"
+          curl -fsSL "$SHA_URL" -o "${ZIP}.sha256"
+
+          # Verify authenticity: zip hash must match published hash
+          sha256sum -c "${ZIP}.sha256"
+
+          echo "Checksum OK. Unzipping..."
+          unzip -q "$ZIP" -d "$HOME/.gradle-dist"
+
+          echo "$HOME/.gradle-dist/gradle-${GRADLE_VERSION}/bin" >> $GITHUB_PATH
+          gradle --version
+
       - name: Run command
         env:
           CMD: ${{ steps.guard.outputs.cmd }}
+          BODY: ${{ github.event.comment.body }}
         run: |
           set -euo pipefail
           chmod +x commands/*.sh
@@ -68,6 +102,9 @@ jobs:
               ;;
             build_apk)
               commands/build_apk.sh
+              ;;
+            apply_patch)
+              commands/apply_patch.sh
               ;;
           esac
 
