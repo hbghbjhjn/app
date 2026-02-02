@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   run:
-    # רק אם זה תגובה על Issue (לא PR) ורק באישיו ה"פיקוד"
     if: ${{ github.event.issue.pull_request == null && github.event.issue.number == 1 }}
     runs-on: ubuntu-latest
 
@@ -25,13 +24,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # רק משתמש מורשה
           if [ "$ACTOR" != "$ALLOWED_ACTOR" ]; then
             echo "Unauthorized actor: $ACTOR"
             exit 1
           fi
 
-          # פורמט: RUN <command> TOKEN=<token>
           if ! printf "%s" "$BODY" | grep -qE '^RUN [a-zA-Z0-9_\-]+ TOKEN='; then
             echo "Bad format. Use: RUN <command> TOKEN=<token>"
             exit 1
@@ -45,7 +42,6 @@ jobs:
             exit 1
           fi
 
-          # Allowlist קשיח
           case "$CMD" in
             init_android|build_apk)
               echo "cmd=$CMD" >> $GITHUB_OUTPUT
@@ -64,14 +60,14 @@ jobs:
           CMD: ${{ steps.guard.outputs.cmd }}
         run: |
           set -euo pipefail
-          chmod +x .github/commands/*.sh
+          chmod +x commands/*.sh
 
           case "$CMD" in
             init_android)
-              .github/commands/init_android.sh
+              commands/init_android.sh
               ;;
             build_apk)
-              .github/commands/build_apk.sh
+              commands/build_apk.sh
               ;;
           esac
 
