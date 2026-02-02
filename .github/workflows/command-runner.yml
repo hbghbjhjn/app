@@ -1,0 +1,97 @@
+name: Command Runner
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: read
+
+jobs:
+  run:
+    # רק אם זה תגובה על Issue (לא PR) ורק באישיו ה"פיקוד"
+    if: ${{ github.event.issue.pull_request == null && github.event.issue.number == 1 }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Guard: actor + token + allowlist command
+        id: guard
+        env:
+          BODY: ${{ github.event.comment.body }}
+          TOKEN: ${{ secrets.CMD_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          ALLOWED_ACTOR: hbghbjhjn
+        run: |
+          set -euo pipefail
+
+          # רק משתמש מורשה
+          if [ "$ACTOR" != "$ALLOWED_ACTOR" ]; then
+            echo "Unauthorized actor: $ACTOR"
+            exit 1
+          fi
+
+          # פורמט: RUN <command> TOKEN=<token>
+          if ! printf "%s" "$BODY" | grep -qE '^RUN [a-zA-Z0-9_\-]+ TOKEN='; then
+            echo "Bad format. Use: RUN <command> TOKEN=<token>"
+            exit 1
+          fi
+
+          CMD="$(printf "%s" "$BODY" | awk '{print $2}')"
+          PROVIDED="$(printf "%s" "$BODY" | sed -n 's/.*TOKEN=\(.*\)$/\1/p' | tr -d '\r')"
+
+          if [ "$PROVIDED" != "$TOKEN" ]; then
+            echo "Bad token"
+            exit 1
+          fi
+
+          # Allowlist קשיח
+          case "$CMD" in
+            init_android|build_apk)
+              echo "cmd=$CMD" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Command not allowed: $CMD"
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run command
+        env:
+          CMD: ${{ steps.guard.outputs.cmd }}
+        run: |
+          set -euo pipefail
+          chmod +x .github/commands/*.sh
+
+          case "$CMD" in
+            init_android)
+              .github/commands/init_android.sh
+              ;;
+            build_apk)
+              .github/commands/build_apk.sh
+              ;;
+          esac
+
+      - name: Commit changes (if any)
+        run: |
+          set -e
+          git config user.name "command-runner"
+          git config user.email "command-runner@users.noreply.github.com"
+
+          if git status --porcelain | grep -q .; then
+            git add -A
+            git commit -m "Command Runner: apply ${{ steps.guard.outputs.cmd }}"
+            git push
+          else
+            echo "No changes to commit."
+          fi
+
+      - name: Upload APK artifact (if exists)
+        if: ${{ steps.guard.outputs.cmd == 'build_apk' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
