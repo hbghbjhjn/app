@@ -62,6 +62,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Download Gradle distribution and VERIFY authenticity (checksum) before using it.
       - name: Install Gradle (verified)
         if: ${{ steps.guard.outputs.cmd == 'build_apk' }}
         env:
