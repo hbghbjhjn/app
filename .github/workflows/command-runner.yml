@@ -3,56 +3,94 @@ name: Command Runner
 on:
   issue_comment:
     types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: write
-  issues: read
+  issues: write
 
 jobs:
   run:
-    if: ${{ github.event.issue.pull_request == null && github.event.issue.number == 1 }}
+    # נשאיר את זה על אישיו #1 בלבד כמו שהיה
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.issue.pull_request == null && github.event.issue.number == 1) }}
     runs-on: ubuntu-latest
 
     steps:
-      - name: Guard: actor + token + allowlist command
+      - name: Acknowledge (debug)
+        if: ${{ github.event_name == 'issue_comment' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue_number = context.payload.issue.number;
+            const body = context.payload.comment.body || "";
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: [
+                "✅ **Command Runner**: קיבלתי תגובה והתחלתי לעבד.",
+                "",
+                `- Actor: \`${context.actor}\``,
+                `- Run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                "",
+                "שורה ראשונה שקיבלתי:",
+                "```",
+                body.split(/\r?\n/)[0] || "(empty)",
+                "```"
+              ].join("\n")
+            });
+
+      - name: Guard (actor + token + allowlist)
         id: guard
         env:
-          BODY: ${{ github.event.comment.body }}
+          BODY: ${{ github.event_name == 'issue_comment' && github.event.comment.body || '' }}
           TOKEN: ${{ secrets.CMD_TOKEN }}
           ACTOR: ${{ github.actor }}
           ALLOWED_ACTOR: hbghbjhjn
         run: |
           set -euo pipefail
 
+          # ברירת מחדל
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+          echo "cmd=" >> "$GITHUB_OUTPUT"
+          echo "error=" >> "$GITHUB_OUTPUT"
+
+          # ב-workflow_dispatch אין BODY (אין תגובה) – נשתמש ב-input ריק ונעצור עם הודעה
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "error=workflow_dispatch triggered. This workflow is meant to be triggered from Issue #1 comments." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [ "$ACTOR" != "$ALLOWED_ACTOR" ]; then
-            echo "Unauthorized actor: $ACTOR"
-            exit 1
+            echo "error=Unauthorized actor: $ACTOR" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           if ! printf "%s" "$BODY" | grep -qE '^RUN [a-zA-Z0-9_\-]+ TOKEN='; then
-            echo "Bad format. Use: RUN <command> TOKEN=<token>"
-            exit 1
+            echo "error=Bad format. Use: RUN <command> TOKEN=<token>" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           CMD="$(printf "%s" "$BODY" | awk '{print $2}')"
           PROVIDED="$(printf "%s" "$BODY" | sed -n 's/.*TOKEN=\(.*\)$/\1/p' | tr -d '\r')"
 
           if [ "$PROVIDED" != "$TOKEN" ]; then
-            echo "Bad token"
-            exit 1
+            echo "error=Bad token (comment TOKEN does not match CMD_TOKEN secret)" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           case "$CMD" in
             init_android|build_apk|apply_patch)
-              echo "cmd=$CMD" >> $GITHUB_OUTPUT
+              echo "ok=true" >> "$GITHUB_OUTPUT"
+              echo "cmd=$CMD" >> "$GITHUB_OUTPUT"
               ;;
             *)
-              echo "Command not allowed: $CMD"
-              exit 1
+              echo "error=Command not allowed: $CMD" >> "$GITHUB_OUTPUT"
               ;;
           esac
 
       - name: Checkout
+        if: ${{ steps.guard.outputs.ok == 'true' }}
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -62,34 +100,28 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # Download Gradle distribution and VERIFY authenticity (checksum) before using it.
       - name: Install Gradle (verified)
         if: ${{ steps.guard.outputs.cmd == 'build_apk' }}
         env:
           GRADLE_VERSION: "8.2"
         run: |
           set -euo pipefail
-
           ZIP="gradle-${GRADLE_VERSION}-bin.zip"
           URL="https://services.gradle.org/distributions/${ZIP}"
           SHA_URL="${URL}.sha256"
 
-          echo "Downloading Gradle: $URL"
           curl -fsSL "$URL" -o "$ZIP"
-
-          echo "Downloading checksum: $SHA_URL"
           curl -fsSL "$SHA_URL" -o "${ZIP}.sha256"
-
-          # Verify authenticity: zip hash must match published hash
           sha256sum -c "${ZIP}.sha256"
 
-          echo "Checksum OK. Unzipping..."
           unzip -q "$ZIP" -d "$HOME/.gradle-dist"
-
           echo "$HOME/.gradle-dist/gradle-${GRADLE_VERSION}/bin" >> $GITHUB_PATH
           gradle --version
 
       - name: Run command
+        id: run_cmd
+        if: ${{ steps.guard.outputs.ok == 'true' }}
+        continue-on-error: true
         env:
           CMD: ${{ steps.guard.outputs.cmd }}
           BODY: ${{ github.event.comment.body }}
@@ -98,23 +130,17 @@ jobs:
           chmod +x commands/*.sh
 
           case "$CMD" in
-            init_android)
-              commands/init_android.sh
-              ;;
-            build_apk)
-              commands/build_apk.sh
-              ;;
-            apply_patch)
-              commands/apply_patch.sh
-              ;;
+            init_android) commands/init_android.sh ;;
+            build_apk)    commands/build_apk.sh ;;
+            apply_patch)  commands/apply_patch.sh ;;
           esac
 
       - name: Commit changes (if any)
+        if: ${{ steps.guard.outputs.ok == 'true' }}
         run: |
           set -e
           git config user.name "command-runner"
           git config user.email "command-runner@users.noreply.github.com"
-
           if git status --porcelain | grep -q .; then
             git add -A
             git commit -m "Command Runner: apply ${{ steps.guard.outputs.cmd }}"
@@ -123,9 +149,50 @@ jobs:
             echo "No changes to commit."
           fi
 
-      - name: Upload APK artifact (if exists)
-        if: ${{ steps.guard.outputs.cmd == 'build_apk' }}
+      - name: Upload APK artifact
+        if: ${{ steps.guard.outputs.cmd == 'build_apk' && steps.run_cmd.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Report back to Issue (always)
+        if: ${{ github.event_name == 'issue_comment' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue_number = context.payload.issue.number;
+            const ok = "${{ steps.guard.outputs.ok }}";
+            const cmd = "${{ steps.guard.outputs.cmd }}";
+            const guardErr = `${{ steps.guard.outputs.error }}`.trim();
+            const runOutcome = "${{ steps.run_cmd.outcome }}"; // success/failure/skipped
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            let lines = [];
+            lines.push("📣 **Command Runner – סטטוס**");
+            lines.push("");
+            lines.push(`- Guard ok: \`${ok}\``);
+            lines.push(`- Command: \`${cmd || "(none)"}\``);
+            lines.push(`- Run: ${runUrl}`);
+
+            if (guardErr) {
+              lines.push("");
+              lines.push("❌ **נחסם ב-Guard:**");
+              lines.push("```");
+              lines.push(guardErr);
+              lines.push("```");
+            } else {
+              lines.push("");
+              lines.push(`- Command step outcome: \`${runOutcome}\``);
+              if (cmd === "build_apk" && runOutcome === "success") {
+                lines.push("");
+                lines.push("✅ אם הכל עבר – ה-APK נמצא תחת **Actions → Artifacts → app-debug-apk**");
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: lines.join("\n")
+            });
